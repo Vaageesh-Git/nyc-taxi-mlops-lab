@@ -65,6 +65,16 @@ resource "aws_security_group" "platform" {
   tags = { Name = "lab-platform" }
 }
 
+resource "aws_vpc_security_group_ingress_rule" "platform_mlflow_from_notebook" {
+  security_group_id            = aws_security_group.platform.id
+  referenced_security_group_id = module.notebook.security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 5000
+  to_port                      = 5000
+  description                  = "MLflow from SageMaker notebook"
+}
+
+
 resource "aws_security_group" "llm" {
   name        = "lab-llm"
   description = "LLM host: chat (8080) and embed (8081)"

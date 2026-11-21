@@ -1,0 +1,68 @@
+name: cd
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (default: sha-<git_sha_7> of HEAD)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-app
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, lab-app]
+    if: |
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.conclusion == 'success')
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy app stack
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ -n "$INPUT_TAG" ]; then
+            IMAGE_TAG="$INPUT_TAG"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+            IMAGE_TAG="sha-${HEAD_SHA:0:7}"
+          else
+            IMAGE_TAG="sha-${GITHUB_SHA::7}"
+          fi
+          export IMAGE_TAG
+          echo "Deploying $IMAGE_PREFIX/app:$IMAGE_TAG"
+          docker compose -f deploy/compose.app.yaml pull
+          docker compose -f deploy/compose.app.yaml up -d --remove-orphans
+      - name: Smoke test
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1/version
+          echo
+          curl -fsS -X POST http://127.0.0.1/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}'

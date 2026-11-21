@@ -40,3 +40,13 @@ output "artifact_bucket" {
   description = "Artifact bucket for MLflow and pipelines"
   value       = module.artifact_bucket.name
 }
+
+output "redshift_cluster_id" {
+  description = "Redshift cluster identifier"
+  value       = module.redshift.cluster_id
+}
+
+output "redshift_database" {
+  description = "Redshift database name"
+  value       = module.redshift.database
+}

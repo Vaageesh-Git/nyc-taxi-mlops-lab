@@ -3,7 +3,12 @@
 # number, and the alert that tells you it's being missed.
 slos:
   - name: predict-availability
-    sli:
-    objective:
-    why:
-    alert:
+    sli: Ratio of quotes served by model vs total quotes (lab_predictions_total{source="model"} / lab_predictions_total)
+    objective: "99.0%"
+    why: Balances reliable rider quotes with Learner Lab resource constraints and container startup latency.
+    alert: PredictAvailabilityBurnRateCritical (14.4x/1h+5m), PredictAvailabilityBurnRateWarning (6x/6h+30m)
+  - name: predict-latency
+    sli: Ratio of /predict requests completing in <= 250ms (lab_http_request_duration_seconds_bucket{route="/predict",le="0.25"} / lab_http_request_duration_seconds_count{route="/predict"})
+    objective: "95.0%"
+    why: 250ms provides an immediate interactive user experience in the mobile UI while accommodating internal routing through Traefik and LightGBM inference.
+    alert: PredictLatencyBurnRateCritical (14.4x/1h+5m), PredictLatencyBurnRateWarning (6x/6h+30m)

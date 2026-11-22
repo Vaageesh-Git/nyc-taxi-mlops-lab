@@ -59,3 +59,9 @@ module "wiki_secret" {
   name        = "lab/wiki"
   description = "Knowledge base URL and token"
 }
+
+module "grafana_secret" {
+  source      = "../modules/secret"
+  name        = "lab/grafana"
+  description = "Grafana Cloud remote-write URL and credentials"
+}

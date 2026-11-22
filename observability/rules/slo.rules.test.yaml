@@ -1,0 +1,42 @@
+rule_files:
+  - slo.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Normal traffic for first 60m: 100 quotes/min (all model)
+      # Then sustained outage for 30m: all quotes fallback (100 quotes/min)
+      - series: 'lab_predictions_total{source="model", alias="champion", version="1"}'
+        values: '0+100x60 6000+0x30'
+      - series: 'lab_predictions_total{source="fallback", alias="", version=""}'
+        values: '0+0x60 0+100x30'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: PredictAvailabilityBurnRateCritical
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: PredictAvailabilityBurnRateCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: predict-availability
+            exp_annotations:
+              summary: "Predict availability error budget burning fast (14.4x over 1h/5m)"
+              description: "High proportion of predictions are falling back to static median."
+
+  # Test that a short 1-minute transient error spike does not trigger a critical page
+  - interval: 1m
+    input_series:
+      - series: 'lab_predictions_total{source="model", alias="champion", version="1"}'
+        values: '0+100x10 1000+0x1 1000+100x20'
+      - series: 'lab_predictions_total{source="fallback", alias="", version=""}'
+        values: '0+0x10 0+100x1 100+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PredictAvailabilityBurnRateCritical
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: PredictAvailabilityBurnRateCritical
+        exp_alerts: []

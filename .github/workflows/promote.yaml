@@ -47,7 +47,7 @@ jobs:
           # Verify that the pipeline evaluated this version
           for req in mae_min champion_mae_min p95_latency_ms training_window holdout_month; do
             if ! jq -e --arg r "$req" 'has($r)' <<<"$TAGS" >/dev/null; then
-              echo "Error: Cannot promote version $TARGET: missing required evaluation tag '\''$req'\''" >&2
+              echo "Error: Cannot promote version $TARGET: missing required evaluation tag '$req'" >&2
               exit 1
             fi
           done

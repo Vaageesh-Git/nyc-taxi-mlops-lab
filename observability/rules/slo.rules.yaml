@@ -3,7 +3,7 @@
 # Metric names are contracts/metrics.yaml's. `make check` runs promtool on this file and on any
 # *.test.yaml next to it.
 groups:
-  - name: slo-rules
+  - name: slo-predict-availability
     rules:
       # Predict Availability SLI: error = fallback / total
       - record: job:predict_requests:rate5m
@@ -34,6 +34,31 @@ groups:
       - record: job:predict_error:ratio_rate6h
         expr: job:predict_errors:rate6h / job:predict_requests:rate6h
 
+      # Alerts: Multi-window multi-burn-rate for 99.0% SLO (budget = 0.01)
+      # Fast burn: 14.4x over 1h and 5m (burns 2% of budget in 1 hour)
+      - alert: PredictAvailabilityBurnRateCritical
+        expr: job:predict_error:ratio_rate1h > (14.4 * 0.01) and job:predict_error:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          slo: predict-availability
+        annotations:
+          summary: "Predict availability error budget burning fast (14.4x over 1h/5m)"
+          description: "High proportion of predictions are falling back to static median."
+
+      # Slow burn: 6x over 6h and 30m (burns 5% of budget in 6 hours)
+      - alert: PredictAvailabilityBurnRateWarning
+        expr: job:predict_error:ratio_rate6h > (6 * 0.01) and job:predict_error:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          slo: predict-availability
+        annotations:
+          summary: "Predict availability error budget burning slowly (6x over 6h/30m)"
+          description: "Persistent elevated fallback rate threatening 30-day SLO."
+
+  - name: slo-predict-latency
+    rules:
       # Predict Latency SLI (target 250ms): error = requests > 0.25s / total /predict requests
       - record: job:predict_latency_requests:rate5m
         expr: sum(rate(lab_http_request_duration_seconds_count{route="/predict"}[5m]))
@@ -62,29 +87,6 @@ groups:
         expr: sum(rate(lab_http_request_duration_seconds_count{route="/predict"}[6h])) - sum(rate(lab_http_request_duration_seconds_bucket{route="/predict",le="0.25"}[6h]))
       - record: job:predict_latency_error:ratio_rate6h
         expr: job:predict_latency_errors:rate6h / job:predict_latency_requests:rate6h
-
-      # Alerts: Multi-window multi-burn-rate for 99.0% SLO (budget = 0.01)
-      # Fast burn: 14.4x over 1h and 5m (burns 2% of budget in 1 hour)
-      - alert: PredictAvailabilityBurnRateCritical
-        expr: job:predict_error:ratio_rate1h > (14.4 * 0.01) and job:predict_error:ratio_rate5m > (14.4 * 0.01)
-        for: 2m
-        labels:
-          severity: critical
-          slo: predict-availability
-        annotations:
-          summary: "Predict availability error budget burning fast (14.4x over 1h/5m)"
-          description: "High proportion of predictions are falling back to static median."
-
-      # Slow burn: 6x over 6h and 30m (burns 5% of budget in 6 hours)
-      - alert: PredictAvailabilityBurnRateWarning
-        expr: job:predict_error:ratio_rate6h > (6 * 0.01) and job:predict_error:ratio_rate30m > (6 * 0.01)
-        for: 15m
-        labels:
-          severity: warning
-          slo: predict-availability
-        annotations:
-          summary: "Predict availability error budget burning slowly (6x over 6h/30m)"
-          description: "Persistent elevated fallback rate threatening 30-day SLO."
 
       # Latency fast burn: 14.4x budget (for 95% latency SLO, budget = 0.05, 14.4 * 0.05 = 0.72)
       - alert: PredictLatencyBurnRateCritical

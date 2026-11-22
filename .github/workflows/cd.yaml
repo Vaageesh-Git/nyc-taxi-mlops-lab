@@ -10,6 +10,10 @@ on:
       tag:
         description: "Image tag to deploy (default: sha-<git_sha_7> of HEAD)"
         required: false
+      rollback:
+        description: "Roll back to the other color without deploying"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,33 +40,75 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Deploy app stack
+      - name: Deploy or Rollback
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ inputs.rollback }}
         run: |
           export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          deploy/web.sh prepare
+
+          if [ "$ROLLBACK" = "true" ]; then
+            LIVE=$(deploy/web.sh live)
+            if [ "$LIVE" = "blue" ]; then
+              TARGET="green"
+            elif [ "$LIVE" = "green" ]; then
+              TARGET="blue"
+            else
+              echo "No live color currently running to roll back from" >&2
+              exit 1
+            fi
+            echo "Rolling back traffic from $LIVE to $TARGET"
+            deploy/web.sh smoke "$TARGET"
+            deploy/web.sh switch "$TARGET"
+            deploy/web.sh status
+            exit 0
+          fi
+
           if [ -n "$INPUT_TAG" ]; then
             IMAGE_TAG="$INPUT_TAG"
+            EXPECTED_SHA=""
           elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
             IMAGE_TAG="sha-${HEAD_SHA:0:7}"
+            EXPECTED_SHA="$HEAD_SHA"
           else
             IMAGE_TAG="sha-${GITHUB_SHA::7}"
+            EXPECTED_SHA="$GITHUB_SHA"
           fi
           export IMAGE_TAG
-          echo "Deploying $IMAGE_PREFIX/app:$IMAGE_TAG"
-          docker compose -f deploy/compose.app.yaml pull
-          docker compose -f deploy/compose.app.yaml up -d --remove-orphans
-      - name: Smoke test
-        run: |
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1/version
-          echo
-          curl -fsS -X POST http://127.0.0.1/predict \
-            -H 'Content-Type: application/json' \
-            -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}'
+
+          LIVE=$(deploy/web.sh live)
+          if [ "$LIVE" = "blue" ]; then
+            TARGET="green"
+          else
+            TARGET="blue"
+          fi
+
+          echo "Live color: $LIVE -> Deploying new tag $IMAGE_TAG to idle color: $TARGET"
+
+          # Determine tags for both colors to keep the non-target color intact
+          BLUE_TAG=$(deploy/web.sh tag blue)
+          GREEN_TAG=$(deploy/web.sh tag green)
+
+          if [ "$TARGET" = "blue" ]; then
+            BLUE_TAG="$IMAGE_TAG"
+            [ "$GREEN_TAG" = "none" ] && GREEN_TAG="$IMAGE_TAG"
+          else
+            GREEN_TAG="$IMAGE_TAG"
+            [ "$BLUE_TAG" = "none" ] && BLUE_TAG="$IMAGE_TAG"
+          fi
+          export BLUE_TAG GREEN_TAG
+
+          echo "Deploying app-$TARGET ($IMAGE_TAG)..."
+          docker compose -f deploy/compose.web.yaml pull "app-$TARGET"
+          docker compose -f deploy/compose.web.yaml up -d --remove-orphans traefik "app-$TARGET"
+
+          echo "Smoke testing target color $TARGET..."
+          deploy/web.sh smoke "$TARGET" "$EXPECTED_SHA"
+
+          echo "Switching live traffic to $TARGET..."
+          deploy/web.sh switch "$TARGET"
+
+          echo "Deployment complete. Final status:"
+          deploy/web.sh status

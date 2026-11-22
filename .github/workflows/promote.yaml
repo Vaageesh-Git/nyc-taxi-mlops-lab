@@ -1,0 +1,102 @@
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Model version to promote to champion (default: current challenger)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: [self-hosted, lab-app]
+    environment: production
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Promote model to champion
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          MLFLOW_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+        run: |
+          set -euo pipefail
+          URI="${MLFLOW_URI:-http://172.31.36.18:5000}"
+
+          TARGET="$INPUT_VERSION"
+          if [ -z "$TARGET" ]; then
+            echo "No version specified; querying current challenger alias..."
+            CHALLENGER_RESP=$(curl -fsS "$URI/api/2.0/mlflow/registered-models/alias?name=trip-duration&alias=challenger")
+            TARGET=$(jq -r '.model_version.version // empty' <<<"$CHALLENGER_RESP")
+            if [ -z "$TARGET" ]; then
+              echo "Error: No challenger model version found in MLflow" >&2
+              exit 1
+            fi
+            echo "Found challenger version: $TARGET"
+          fi
+
+          echo "Inspecting model version $TARGET tags in MLflow..."
+          VERSION_RESP=$(curl -fsS "$URI/api/2.0/mlflow/model-versions/get?name=trip-duration&version=$TARGET")
+          TAGS=$(jq -r '[.model_version.tags[]? | {(.key): .value}] | add // {}' <<<"$VERSION_RESP")
+
+          # Verify that the pipeline evaluated this version
+          for req in mae_min champion_mae_min p95_latency_ms training_window holdout_month; do
+            if ! jq -e --arg r "$req" 'has($r)' <<<"$TAGS" >/dev/null; then
+              echo "Error: Cannot promote version $TARGET: missing required evaluation tag '\''$req'\''" >&2
+              exit 1
+            fi
+          done
+
+          echo "Evaluation verified for version $TARGET:"
+          jq '{mae_min: .mae_min, champion_mae_min: .champion_mae_min, p95_latency_ms: .p95_latency_ms}' <<<"$TAGS"
+
+          # Record outgoing champion
+          OUTGOING_RESP=$(curl -sS "$URI/api/2.0/mlflow/registered-models/alias?name=trip-duration&alias=champion" || true)
+          OUTGOING_VER=$(jq -r '.model_version.version // empty' <<<"$OUTGOING_RESP")
+          if [ -n "$OUTGOING_VER" ]; then
+            echo "Outgoing champion was version $OUTGOING_VER"
+          else
+            echo "No previous champion model version found."
+          fi
+
+          # Set champion alias
+          echo "Setting MLflow alias champion -> version $TARGET..."
+          curl -fsS -X POST "$URI/api/2.0/mlflow/registered-models/alias" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\": \"trip-duration\", \"alias\": \"champion\", \"version\": \"$TARGET\"}" >/dev/null
+
+          echo "Model version $TARGET successfully assigned alias champion in MLflow."
+
+      - name: Reload serving and check /predict
+        run: |
+          set -euo pipefail
+          echo "Reloading serving-champion container..."
+          deploy/web.sh reload champion
+
+          echo "Verifying /predict through Traefik (HTTP 80)..."
+          SUCCESS=0
+          for i in $(seq 1 30); do
+            RESP=$(curl -fsS -X POST http://127.0.0.1/predict \
+              -H 'Content-Type: application/json' \
+              -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}' 2>/dev/null || true)
+            echo "Attempt $i: $RESP"
+            if echo "$RESP" | jq -e '.model.alias == "champion"' >/dev/null 2>&1; then
+              echo "Serving answered with champion model!"
+              SUCCESS=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "Error: /predict failed to answer with champion model" >&2
+            exit 1
+          fi
+
+          echo "Status:"
+          deploy/web.sh status
